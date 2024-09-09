@@ -1,0 +1,168 @@
+#!/usr/bin/env python3
+
+import argparse
+import fileinput
+import os
+
+import sh
+
+git_host = "github.com"
+workspace = os.environ.get("_WORKSPACE_")
+git = sh.git.bake("--no-pager")
+
+
+def find_recipe(openbmc_dir, project_dir):
+    match_suffixes = ("bb", "bbappend", "inc")
+    pathspecs = ("*.{}".format(x) for x in match_suffixes)
+    grep_args = (
+        "-l",
+        "-e",
+        project_dir,
+        "--and",
+        "(",
+        "-e",
+        "_URI",
+        "-e",
+        "KSRC",
+        ")",
+    )
+    grep_args = (*grep_args, *pathspecs)
+    try:
+        return (
+            git.grep(*grep_args, _cwd=openbmc_dir)
+            .split()
+        )
+    except sh.ErrorReturnCode_1:
+        pass
+    except sh.ErrorReturnCode as e:
+        print("{}".format(e))
+
+    return []
+
+
+def extract_sha_from_recipe(recipe):
+    with open(recipe) as fd:
+        for line in fd:
+            line = line.rstrip()
+            if "SRCREV" in line:
+                sha = line.split("=")[-1].replace('"', "").strip()
+                return sha
+    raise RuntimeError(f"No SRCREV or URI found in {recipe}")
+
+
+def get_sha_from_repo():
+    sha = git("rev-parse", "--verify", "HEAD").rstrip()
+    return sha
+
+
+def get_path_from_repo():
+    path = git("rev-parse", "--show-toplevel").rstrip()
+    return path
+
+
+def get_branch_from_repo():
+    branch = (
+        git("rev-parse", "--abbrev-ref", "HEAD")
+        .rstrip()
+    )
+    return branch
+
+
+def get_project_name_from_recipe(path):
+    basename = os.path.basename(path)
+    name = basename.split(".")[0].split("_")[0]
+    return name
+
+
+def replace_sha(openbmc_dir, recipe):
+    recipe_full_path = f"{openbmc_dir}/{recipe}"
+    old_sha = extract_sha_from_recipe(recipe_full_path)
+    new_sha = get_sha_from_repo()
+    if old_sha == new_sha:
+        print(f"old_sha:{old_sha} = new_sha:{new_sha}, skip")
+        return
+    with open(recipe_full_path, "r+") as fd:
+        recipe_content = fd.read()
+        recipe_content = recipe_content.replace(old_sha, new_sha)
+        fd.seek(0)
+        fd.write(recipe_content)
+    project_name = get_project_name_from_recipe(recipe)
+    try:
+        shortlog = git.shortlog(f"{old_sha}..{new_sha}")
+        commit_msg = f"{project_name} srcrev bump for test: {old_sha[:10]}..{new_sha[:10]}"
+        commit_msg += f"\n\n{shortlog}"
+        git.add(recipe, _cwd=openbmc_dir)
+        git.commit("-s", "-F", "-", _in=sh.echo(commit_msg), _cwd=openbmc_dir)
+        print(commit_msg)
+    except sh.ErrorReturnCode as e:
+        print(e)
+
+
+def _replace_uri(uri_line, path, branch):
+    prefix = uri_line.split("=")[0].rstrip()
+    line = f'{prefix} = "git://{path};branch={branch};protocol=file "\n'
+    return line
+
+
+def replace_uri_sha(args):
+    local_path = get_path_from_repo()
+    local_branch = get_branch_from_repo()
+    repo_name = os.path.basename(local_path)
+    openbmc_dir = args.openbmc
+    remote_uri = f"git://{git_host}/openbmc/{repo_name}"
+    r = find_recipe(openbmc_dir, remote_uri)
+    if len(r) > 1:
+        raise RuntimeError("More than one recipe be found")
+    if len(r) == 0:
+        raise RuntimeError(f"Can not find the recipe for {remote_uri}")
+    recipe = r[0]
+    recipe_full_path = f"{args.openbmc}/{recipe}"
+    old_sha = extract_sha_from_recipe(recipe_full_path)
+    new_sha = get_sha_from_repo()
+    for line in fileinput.input(recipe_full_path, inplace=True):
+        if remote_uri in line:
+            line = _replace_uri(line, local_path, local_branch)
+        elif old_sha in line:
+            line = line.replace(old_sha, new_sha)
+        print(line, end="")
+
+    project_name = get_project_name_from_recipe(recipe)
+    try:
+        shortlog = git.shortlog(f"{old_sha}..{new_sha}")
+        commit_msg = f"{project_name} redirect to local: {old_sha[:10]}..{new_sha[:10]}"
+        commit_msg += f"\n\n{shortlog}"
+        git.add(recipe, _cwd=openbmc_dir)
+        git.commit("-s", "-F", "-", _in=sh.echo(commit_msg), _cwd=openbmc_dir)
+        print(commit_msg)
+    except sh.ErrorReturnCode as e:
+        print(e)
+
+
+def process_replace(args):
+    project_dir = get_path_from_repo()
+    r = find_recipe(args.openbmc, project_dir)
+    if len(r) > 1:
+        raise RuntimeError("More than one recipe be found")
+    if len(r) == 0:
+        replace_uri_sha(args)
+        return
+    replace_sha(args.openbmc, r[0])
+
+
+def main():
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument(
+        "-o",
+        "--openbmc",
+        dest="openbmc",
+        default=f"{workspace}/openbmc",
+        help="openbmc dir",
+    )
+
+    args = parser.parse_args()
+    process_replace(args)
+
+
+if __name__ == "__main__":
+    main()
