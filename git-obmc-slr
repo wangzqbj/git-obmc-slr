@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+#ref: https://github.com/openbmc/openbmc-tools/blob/master/openbmc-autobump/openbmc-autobump.py
+
 import argparse
 import fileinput
 import os

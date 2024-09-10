@@ -88,6 +88,9 @@ flash的repo版本是哪个
 所以，你可能需要一个工具 git-obmc-slr(stands for sync local repo)，来帮助你更新
 repo的SRCREV, 而不是“偷懒”使用“AUTOREV"
 
+
+Note: Most of the code copied from https://github.com/openbmc/openbmc-tools/blob/master/openbmc-autobump/openbmc-autobump.py
+
 ## Installation
 
 ```
